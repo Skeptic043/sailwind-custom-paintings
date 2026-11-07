@@ -1,0 +1,9 @@
+{
+  "name": "Custom_Paintings",
+  "version_number": "0.1.6",
+  "website_url": "https://github.com/Skeptic043/sailwind-custom-paintings",
+  "description": "Show your own pictures on any painting you own, chosen from your own folders.",
+  "dependencies": [
+    "BepInEx-BepInExPack-5.4.2305"
+  ]
+}
