@@ -28,7 +28,7 @@ Settings can be found in `BepInEx/config/com.skeptic043.sailwind.custompaintings
 | Setting | Default | Options |
 | --- | --- | --- |
 | `Picture folders` | Blank | Folders to choose pictures from, separated by `\|`, for example `D:\Pictures \| E:\Ship Art`. |
-| `Maximum size` | `1024` | Pictures larger than this size are shrunk to match. `1024`, `2048` or `4096`. `2048` is sharper up close and uses four times the memory. |
+| `Maximum size` | `1024` | Pictures larger than this size are shrunk to match. `1024`, `2048` or `4096`. |
 | `Compress pictures` | `true` | Store pictures compressed in video memory, using about a sixth of the memory with a slight loss of quality. |
 
 ## Compatibility
