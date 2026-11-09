@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace CustomPaintings
 {
-    [BepInPlugin(Id, "Custom Paintings", "0.1.6")]
+    [BepInPlugin(Id, "Custom Paintings", "0.1.7")]
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Id = PictureStore.Key;
@@ -30,8 +30,8 @@ namespace CustomPaintings
             Log = Logger;
             pictureFolders = Config.Bind("Pictures", "Picture folders", "",
                 "Folders to choose pictures from, separated by |. Each one is listed when the menu opens, and its subfolders can be browsed. PNG and JPG are supported.");
-            maxSize = Config.Bind("Pictures", "Maximum size", 2048, new ConfigDescription(
-                "Pictures larger than this on their longer side are shrunk to it. Smaller pictures keep their size. 2048 matches the game's own paintings.",
+            maxSize = Config.Bind("Pictures", "Maximum size", 1024, new ConfigDescription(
+                "Pictures larger than this on their longer side are shrunk to it. Smaller pictures keep their size. 1024 uses a quarter of the memory of 2048. 2048 matches the game's own paintings and looks sharper up close.",
                 new AcceptableValueList<int>(1024, 2048, 4096)));
             compress = Config.Bind("Pictures", "Compress pictures", true,
                 "Store pictures compressed in video memory, using about a sixth of the memory with a slight loss of quality.");
@@ -62,8 +62,13 @@ namespace CustomPaintings
         private static void Guard(string patch, Action action)
         {
             try { action(); }
-            catch (Exception exception) { Log.LogError($"Custom Paintings {patch} failed: {exception}"); }
+            catch (Exception exception) { Failed(patch, exception); }
         }
+
+        // The pointer and look prompts run every frame, so they catch directly instead of
+        // building a Guard closure on each call.
+        private static void Failed(string patch, Exception exception) =>
+            Log.LogError($"Custom Paintings {patch} failed: {exception}");
 
         private static PaintingPicture Picture(Component item) => item != null ? item.GetComponent<PaintingPicture>() : null;
 
@@ -129,7 +134,13 @@ namespace CustomPaintings
         [HarmonyPatch(typeof(GoPointer), "DoRaycast")]
         private static class PointerTargetPatch
         {
-            private static void Postfix(GoPointer __instance) => Guard("pointer target", () =>
+            private static void Postfix(GoPointer __instance)
+            {
+                try { Target(__instance); }
+                catch (Exception exception) { Failed("pointer target", exception); }
+            }
+
+            private static void Target(GoPointer __instance)
             {
                 if (__instance.type == GoPointer.PointerType.crosshairMouse && GameState.inCursorMenu) return;
                 if (PointerAccess.PointedAt(__instance) != null || __instance.GetHeldItem() != null) return;
@@ -143,7 +154,7 @@ namespace CustomPaintings
                 // Targeted for R only. No Look call, so a nailed painting shows no hover outline.
                 PointerAccess.PointedAt(__instance) = item;
                 PointerAccess.LookDistance(__instance) = hit.distance;
-            });
+            }
         }
 
         private static class LookUiAccess
@@ -163,7 +174,13 @@ namespace CustomPaintings
         [HarmonyPatch(typeof(LookUI), nameof(LookUI.ShowLookText))]
         private static class LookPromptPatch
         {
-            private static void Postfix(LookUI __instance, GoPointerButton button) => Guard("look prompt", () =>
+            private static void Postfix(LookUI __instance, GoPointerButton button)
+            {
+                try { Prompt(__instance, button); }
+                catch (Exception exception) { Failed("look prompt", exception); }
+            }
+
+            private static void Prompt(LookUI __instance, GoPointerButton button)
             {
                 if (button.IsStickyClicked()) return;
                 var picture = Picture(button);
@@ -179,19 +196,23 @@ namespace CustomPaintings
                 LookUiAccess.ShowRicon(__instance);
                 var text = LookUiAccess.ControlsText(__instance);
                 text.text = text.text.Split('\n')[0] + "\n" + ChangePrompt;
-            });
+            }
         }
 
         [HarmonyPatch(typeof(LookUI), nameof(LookUI.ShowHoldText))]
         private static class HoldPromptPatch
         {
-            private static void Postfix(LookUI __instance, PickupableItem item) => Guard("hold prompt", () =>
+            private static void Postfix(LookUI __instance, PickupableItem item)
             {
-                var picture = Picture(item);
-                if (!Settings.controlsTextEnabled || picture == null || !picture.CanChoose) return;
-                LookUiAccess.ShowRicon(__instance);
-                LookUiAccess.ControlsText(__instance).text = ChangePrompt;
-            });
+                try
+                {
+                    var picture = Picture(item);
+                    if (!Settings.controlsTextEnabled || picture == null || !picture.CanChoose) return;
+                    LookUiAccess.ShowRicon(__instance);
+                    LookUiAccess.ControlsText(__instance).text = ChangePrompt;
+                }
+                catch (Exception exception) { Failed("hold prompt", exception); }
+            }
         }
 
         [HarmonyPatch(typeof(SaveLoadManager), nameof(SaveLoadManager.SaveModData))]

@@ -13,6 +13,11 @@ namespace CustomPaintings
     internal sealed class PictureTextures : MonoBehaviour
     {
         public const int ThumbnailSide = 192;
+        // Pictures no painting shows any more are kept up to this much video memory, so a
+        // distant boat coming back or a save switch does not prepare the same file again.
+        private const long KeptBytes = 16L * 1024 * 1024;
+        // Thumbnails kept while the picker stays open, beyond the ones on screen.
+        private const int KeptThumbnails = 60;
 
         private sealed class Entry
         {
@@ -21,10 +26,16 @@ namespace CustomPaintings
             public bool Loading;
             public bool Failed;
             public bool ReloadQueued;
+            // The file and settings the texture was made from.
+            public string Stamp;
+            public int MaxSize;
+            public bool Compressed;
             public readonly HashSet<PaintingPicture> Owners = new HashSet<PaintingPicture>();
         }
 
         private readonly Dictionary<string, Entry> pictures = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
+        // Unused pictures, oldest first.
+        private readonly List<KeyValuePair<string, Entry>> kept = new List<KeyValuePair<string, Entry>>();
         private readonly Queue<string> pictureQueue = new Queue<string>();
         private readonly Dictionary<string, Texture2D> thumbnails = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> failedThumbnails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -41,7 +52,7 @@ namespace CustomPaintings
         {
             if (!pictures.TryGetValue(path, out var entry))
             {
-                entry = new Entry();
+                entry = TakeKept(path) ?? new Entry();
                 pictures.Add(path, entry);
             }
             entry.Owners.Add(owner);
@@ -59,14 +70,65 @@ namespace CustomPaintings
             if (path == null || !pictures.TryGetValue(path, out var entry)) return;
             entry.Owners.Remove(owner);
             if (entry.Owners.Count > 0 || entry.Loading) return;
-            if (entry.Texture != null) Destroy(entry.Texture);
             pictures.Remove(path);
+            if (entry.Texture != null) Keep(path, entry);
+        }
+
+        private void Keep(string path, Entry entry)
+        {
+            kept.Add(new KeyValuePair<string, Entry>(path, entry));
+            long total = 0;
+            foreach (var pair in kept) total += Bytes(pair.Value.Texture);
+            while (total > KeptBytes && kept.Count > 0)
+            {
+                total -= Bytes(kept[0].Value.Texture);
+                Destroy(kept[0].Value.Texture);
+                kept.RemoveAt(0);
+            }
+        }
+
+        // A kept picture is reused only if its file and the settings are unchanged.
+        private Entry TakeKept(string path)
+        {
+            int index = kept.FindIndex(pair => string.Equals(pair.Key, path, StringComparison.OrdinalIgnoreCase));
+            if (index < 0) return null;
+            var entry = kept[index].Value;
+            kept.RemoveAt(index);
+            if (entry.Texture != null && entry.MaxSize == Plugin.MaxSize && entry.Compressed == Plugin.Compress &&
+                entry.Stamp != null && entry.Stamp == Stamp(path)) return entry;
+            if (entry.Texture != null) Destroy(entry.Texture);
+            return null;
+        }
+
+        private void DropKept()
+        {
+            foreach (var pair in kept) if (pair.Value.Texture != null) Destroy(pair.Value.Texture);
+            kept.Clear();
+        }
+
+        private static long Bytes(Texture2D texture)
+        {
+            if (texture == null) return 0;
+            long pixels = (long)texture.width * texture.height;
+            long bytes = texture.format == TextureFormat.DXT1 ? pixels / 2 : texture.format == TextureFormat.DXT5 ? pixels : pixels * 3;
+            return texture.mipmapCount > 1 ? bytes * 4 / 3 : bytes;
+        }
+
+        private static string Stamp(string path)
+        {
+            try
+            {
+                var info = new System.IO.FileInfo(path);
+                return info.Exists ? info.LastWriteTimeUtc.Ticks + ":" + info.Length : null;
+            }
+            catch { return null; }
         }
 
         // After a size or compression setting changes, every picture in use is loaded again.
         // Paintings keep showing the old texture until its replacement is ready.
         public void ReloadAll()
         {
+            DropKept();
             foreach (var pair in pictures) ReloadEntry(pair.Key, pair.Value);
         }
 
@@ -102,6 +164,18 @@ namespace CustomPaintings
             foreach (string path in paths)
                 if (!thumbnails.ContainsKey(path) && !failedThumbnails.Contains(path) &&
                     !string.Equals(path, loadingThumbnail, StringComparison.OrdinalIgnoreCase)) wantedThumbnails.Add(path);
+            // Long browsing keeps only a bounded number of pages' thumbnails.
+            if (thumbnails.Count > KeptThumbnails)
+            {
+                var shown = new HashSet<string>(paths, StringComparer.OrdinalIgnoreCase);
+                foreach (string path in new List<string>(thumbnails.Keys))
+                {
+                    if (thumbnails.Count <= KeptThumbnails) break;
+                    if (shown.Contains(path)) continue;
+                    Destroy(thumbnails[path]);
+                    thumbnails.Remove(path);
+                }
+            }
             Pump();
         }
 
@@ -149,7 +223,10 @@ namespace CustomPaintings
             if (!pictures.TryGetValue(path, out var entry)) yield break;
             Texture2D result = null;
             float aspect = 0f;
-            yield return Decode(path, Plugin.MaxSize, true, Plugin.Compress, (texture, sourceAspect) => { result = texture; aspect = sourceAspect; });
+            string stamp = Stamp(path);
+            int maxSize = Plugin.MaxSize;
+            bool compressed = Plugin.Compress;
+            yield return Decode(path, maxSize, true, compressed, (texture, sourceAspect) => { result = texture; aspect = sourceAspect; });
             entry.Loading = false;
             // Every painting released it while it loaded.
             if (entry.Owners.Count == 0)
@@ -176,6 +253,9 @@ namespace CustomPaintings
                 var old = entry.Texture;
                 entry.Texture = result;
                 entry.Aspect = aspect;
+                entry.Stamp = stamp;
+                entry.MaxSize = maxSize;
+                entry.Compressed = compressed;
                 foreach (var owner in new List<PaintingPicture>(entry.Owners)) owner.OnPictureReady(result, aspect);
                 if (old != null) Destroy(old);
             }
@@ -205,18 +285,48 @@ namespace CustomPaintings
                 done(null, 0f);
                 yield break;
             }
+            Texture2D texture;
+            float aspect;
             // Non-readable: the decoded image goes straight to the GPU without a CPU copy.
             using (var request = UnityWebRequestTexture.GetTexture(uri, true))
             {
                 yield return request.SendWebRequest();
-                var texture = Prepare(path, request, maxSide, mipmaps, compress, out float aspect);
-                done(texture, aspect);
+                texture = ReadBack(path, request, maxSide, mipmaps, out aspect);
+            }
+            if (texture == null) { done(null, 0f); yield break; }
+            // Readback, mipmaps and compression each take a frame of their own.
+            bool finished = false;
+            try
+            {
+                yield return null;
+                if (!Step(path, () => texture.Apply(mipmaps, !compress))) yield break;
+                if (compress)
+                {
+                    yield return null;
+                    if (!Step(path, () => { texture.Compress(false); texture.Apply(false, true); })) yield break;
+                }
+                finished = true;
+            }
+            finally
+            {
+                if (!finished && texture != null) Destroy(texture);
+            }
+            done(texture, aspect);
+        }
+
+        private static bool Step(string path, Action action)
+        {
+            try { action(); return true; }
+            catch (Exception exception)
+            {
+                Plugin.Log.LogWarning($"Could not prepare picture {path}: {exception.Message}");
+                return false;
             }
         }
 
         // An exception escaping a coroutine would stop the loading queue for the session, so a
         // picture that cannot be read or prepared, such as one too large for the GPU, fails on its own.
-        private static Texture2D Prepare(string path, UnityWebRequest request, int maxSide, bool mipmaps, bool compress, out float aspect)
+        private static Texture2D ReadBack(string path, UnityWebRequest request, int maxSide, bool mipmaps, out float aspect)
         {
             aspect = 0f;
             Texture2D source = null;
@@ -235,7 +345,7 @@ namespace CustomPaintings
                 }
                 aspect = source.width / (float)source.height;
                 PictureFit.TargetSize(source.width, source.height, maxSide, out int width, out int height);
-                return Resample(source, width, height, mipmaps, compress);
+                return Resample(source, width, height, mipmaps);
             }
             catch (Exception exception)
             {
@@ -250,7 +360,8 @@ namespace CustomPaintings
 
         // Halving steps keep a large reduction from skipping pixels. sRGB render textures keep
         // colours unchanged in a linear-colour project and are ignored in a gamma one.
-        private static Texture2D Resample(Texture source, int width, int height, bool mipmaps, bool compress)
+        // The texture is returned read back but not yet uploaded; the caller applies it.
+        private static Texture2D Resample(Texture source, int width, int height, bool mipmaps)
         {
             RenderTexture step = null, final = null;
             Texture2D texture = null;
@@ -269,8 +380,17 @@ namespace CustomPaintings
                     if (step != null) RenderTexture.ReleaseTemporary(step);
                     current = step = next;
                 }
-                final = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-                Graphics.Blit(current, final);
+                // Halving often lands exactly on the target, which needs no further copy.
+                if (step != null && w == width && h == height)
+                {
+                    final = step;
+                    step = null;
+                }
+                else
+                {
+                    final = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+                    Graphics.Blit(current, final);
+                }
 
                 texture = new Texture2D(width, height, TextureFormat.RGB24, mipmaps, false);
                 RenderTexture.active = final;
@@ -280,13 +400,6 @@ namespace CustomPaintings
                 texture.wrapMode = TextureWrapMode.Clamp;
                 texture.filterMode = mipmaps ? FilterMode.Trilinear : FilterMode.Bilinear;
                 texture.anisoLevel = mipmaps ? 4 : 0;
-                if (compress)
-                {
-                    texture.Apply(mipmaps, false);
-                    texture.Compress(false);
-                    texture.Apply(false, true);
-                }
-                else texture.Apply(mipmaps, true);
                 var result = texture;
                 texture = null;
                 return result;
