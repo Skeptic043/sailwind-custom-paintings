@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -7,7 +8,7 @@ using UnityEngine;
 
 namespace CustomPaintings
 {
-    [BepInPlugin(Id, "Custom Paintings", "0.1.7")]
+    [BepInPlugin(Id, "Custom Paintings", "0.1.10")]
     public sealed class Plugin : BaseUnityPlugin
     {
         public const string Id = PictureStore.Key;
@@ -15,6 +16,9 @@ namespace CustomPaintings
         private static ConfigEntry<string> pictureFolders;
         private static ConfigEntry<int> maxSize;
         private static ConfigEntry<bool> compress;
+        private static ConfigEntry<KeyboardShortcut> screenshotKey;
+        private static ConfigEntry<string> screenshotFolder;
+        private static ConfigEntry<bool> screenshotNotice;
         private Harmony harmony;
 
         internal static ManualLogSource Log { get; private set; }
@@ -24,6 +28,14 @@ namespace CustomPaintings
         internal static string PictureFolders => pictureFolders.Value;
         internal static int MaxSize => maxSize.Value;
         internal static bool Compress => compress.Value;
+        internal static string ScreenshotFolder
+        {
+            get
+            {
+                string folder = screenshotFolder.Value?.Trim().Trim('"').Trim();
+                return string.IsNullOrEmpty(folder) ? Path.Combine(Paths.BepInExRootPath, "Custom Paintings Screenshots") : folder;
+            }
+        }
 
         private void Awake()
         {
@@ -35,6 +47,12 @@ namespace CustomPaintings
                 new AcceptableValueList<int>(1024, 2048, 4096)));
             compress = Config.Bind("Pictures", "Compress pictures", true,
                 "Store pictures compressed in video memory, using about a sixth of the memory with a slight loss of quality.");
+            screenshotKey = Config.Bind("Screenshots", "Screenshot key", new KeyboardShortcut(KeyCode.F2),
+                "Saves a screenshot of the game as a PNG in the screenshot folder. The picture menu lists that folder.");
+            screenshotFolder = Config.Bind("Screenshots", "Screenshot folder", "",
+                "Folder screenshots are saved in. Blank uses BepInEx/Custom Paintings Screenshots.");
+            screenshotNotice = Config.Bind("Screenshots", "Screenshot notification", true,
+                "Shows the game's notification scroll saying \"Screenshot taken\" after each screenshot.");
             try
             {
                 gameObject.AddComponent<PictureTextures>();
@@ -57,6 +75,36 @@ namespace CustomPaintings
                 Logger.LogError("Custom Paintings disabled after initialization failed. " +
                     "Check game and mod compatibility: " + exception);
             }
+        }
+
+        // Not while the picture menu is open, where the key could be part of a search.
+        private void Update()
+        {
+            if (!screenshotKey.Value.IsDown()) return;
+            if (PicturePicker.Instance != null && PicturePicker.Instance.IsOpen) return;
+            bool taken = false;
+            Guard("screenshot", () => { TakeScreenshot(); taken = true; });
+            if (taken && screenshotNotice.Value) StartCoroutine(NoticeAfterCapture());
+        }
+
+        // The capture happens at the end of this frame, so the scroll waits a frame and stays out of the picture.
+        private static System.Collections.IEnumerator NoticeAfterCapture()
+        {
+            yield return null;
+            var notifications = NotificationUi.instance;
+            if (notifications != null) Guard("screenshot notification", () => notifications.ShowNotification("Screenshot taken"));
+        }
+
+        // Unity writes the file at the end of the frame, with whatever is on screen.
+        private static void TakeScreenshot()
+        {
+            string folder = ScreenshotFolder;
+            Directory.CreateDirectory(folder);
+            string name = "Sailwind " + DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss");
+            string path = Path.Combine(folder, name + ".png");
+            for (int copy = 2; File.Exists(path); copy++) path = Path.Combine(folder, $"{name} ({copy}).png");
+            ScreenCapture.CaptureScreenshot(path);
+            Log.LogInfo("Screenshot saved to " + path);
         }
 
         private static void Guard(string patch, Action action)

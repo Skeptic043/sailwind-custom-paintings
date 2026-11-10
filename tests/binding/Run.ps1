@@ -42,7 +42,13 @@ try {
         @('LookUI', 'controlsText'), @('LookUI', 'ShowRicon'), @('LookUI', 'HideIcons'), @('LookUI', 'pointer'),
         @('Settings', 'controlsTextEnabled'), @('MouseLook', 'ToggleMouseLookAndCursor'), @('Refs', 'SetPlayerControl'),
         @('StartMenu', 'chooseIslandUI'), @('GameState', 'wasInSettingsMenu'), @('GoPointerButton', 'outline'),
-        @('Settings', 'VRLookEnabled'), @('Refs', 'observerMirror'))
+        @('Settings', 'VRLookEnabled'), @('Refs', 'observerMirror'),
+        @('NotificationUi', 'instance'), @('NotificationUi', 'ShowNotification'),
+        @('MouseButtonPointer', 'instance'), @('MouseButtonPointer', 'controllerPointer'),
+        @('UISoundPlayer', 'instance'), @('UISoundPlayer', 'PlayUISound'), @('UISoundPlayer', 'PlayUIClickSound'),
+        @('GoPointerButton', 'overrideEnableOutline'))
+    if (@($oculus.GetType('GameInput', $true).GetMember('GetKeyDown', $all)).Count -eq 0) { throw 'Missing native member: GameInput.GetKeyDown' }
+    Write-Output 'MEMBER PASS: GameInput.GetKeyDown'
     foreach ($pair in $members) {
         $type = $game.GetType($pair[0], $true)
         if (@($type.GetMember($pair[1], $all)).Count -eq 0) { throw "Missing native member: $($pair[0]).$($pair[1])" }

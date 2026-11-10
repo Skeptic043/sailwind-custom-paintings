@@ -1,6 +1,6 @@
 {
   "name": "Custom_Paintings",
-  "version_number": "0.1.7",
+  "version_number": "0.1.10",
   "website_url": "https://github.com/Skeptic043/sailwind-custom-paintings",
   "description": "Show your own pictures on any painting you own, chosen from your own folders.",
   "dependencies": [

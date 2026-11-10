@@ -20,6 +20,7 @@ namespace CustomPaintings
         {
             Sizes();
             Cropping();
+            Rotating();
             CanvasShapes();
             Saves();
             Folders();
@@ -68,6 +69,38 @@ namespace CustomPaintings
             Check(sx == 1f && sy == 1f && ox == 0f && oy == 0f, "a matching picture is not cropped");
         }
 
+        private static void Rotating()
+        {
+            Check(PictureFit.Rotation(0) == 0 && PictureFit.Rotation(90) == 90 && PictureFit.Rotation(360) == 0 &&
+                PictureFit.Rotation(-90) == 270 && PictureFit.Rotation(100) == 90 && PictureFit.Rotation(450) == 90,
+                "rotations are quarter turns from 0 to 270");
+
+            var upright = PictureFit.Place(FitMode.Fill, 0, 2f, 1.6f, 1f);
+            PictureFit.Crop(FitMode.Fill, 2f, 1.6f, out float sx, out float sy, out float ox, out float oy);
+            Check(!upright.OnQuad && upright.ScaleX == sx && upright.OffsetX == ox && upright.ScaleY == sy && upright.OffsetY == oy,
+                "an upright Fill picture stays on the canvas with the same crop as before");
+
+            var flipped = PictureFit.Place(FitMode.Fill, 180, 2f, 1.6f, 1f);
+            Check(!flipped.OnQuad && Near(flipped.ScaleX, -sx) && Near(flipped.OffsetX, ox + sx) &&
+                Near(flipped.ScaleY, -1f) && Near(flipped.OffsetY, 1f),
+                "an upside-down picture stays on the canvas with its crop reversed");
+
+            // A 4:3 photo turned onto a tall 1 x 1.6 canvas fills it as a 1.6 x 1 frame of its own.
+            var sideways = PictureFit.Place(FitMode.Fill, 90, 4f / 3f, 1f, 1.6f);
+            Check(sideways.OnQuad && Near(sideways.QuadWidth, 1.6f) && Near(sideways.QuadHeight, 1f) &&
+                Near(4f / 3f * sideways.ScaleX / sideways.ScaleY, 1.6f) && Near(sideways.ScaleX, 1f),
+                "a sideways picture covers the canvas on a quad, cropped to the turned canvas shape");
+
+            var fitSideways = PictureFit.Place(FitMode.Fit, 270, 2f, 1f, 1.6f);
+            Check(fitSideways.OnQuad && Near(fitSideways.QuadWidth, 1.6f) && Near(fitSideways.QuadHeight, .8f) &&
+                fitSideways.ScaleX == 1f && fitSideways.ScaleY == 1f,
+                "a sideways Fit picture shows whole, sized within the turned canvas");
+
+            var fitFlipped = PictureFit.Place(FitMode.Fit, 180, 2f, 1.6f, 1f);
+            Check(fitFlipped.OnQuad && fitFlipped.ScaleX == 1f && fitFlipped.OffsetX == 0f,
+                "an upside-down Fit picture is turned with its quad, not its texture range");
+        }
+
         private static void CanvasShapes()
         {
             Check(PictureFit.TryGetCanvas("painting_vertical_long", out var canvas) && Near(canvas.Aspect, 0.686f, 0.001f),
@@ -87,18 +120,21 @@ namespace CustomPaintings
             var store = new PictureStore();
             store.Set(-1234, 120, @"D:\Pictures\boat.png", FitMode.Fill, PictureRecord.DefaultBackground);
             store.Set(99, 261, @"D:\Pictures\Long name ünïcode.jpg", FitMode.Fit, "#E8DCC0");
+            store.Set(7, 250, @"D:\Pictures\tall.png", FitMode.Fill, null, 270);
             string json = store.Serialize();
-            Check(!json.Contains("Fill") && !json.Contains("#000000"), "default mode and border are left out of the save");
+            Check(!json.Contains("Fill") && !json.Contains("#000000") && json.Split(new[] { "Rotation" }, StringSplitOptions.None).Length == 2,
+                "default mode, border and rotation are left out of the save");
             var loaded = new PictureStore();
-            Check(loaded.Load(json) && loaded.Count == 2 && loaded.Writable, "saved pictures load back");
+            Check(loaded.Load(json) && loaded.Count == 3 && loaded.Writable, "saved pictures load back");
+            Check(loaded.TryGet(7, 250, out var turned) && turned.TurnDegrees == 270, "a rotation round-trips");
             Check(loaded.TryGet(99, 261, out var record) && record.Path == @"D:\Pictures\Long name ünïcode.jpg" &&
                 record.FitMode == FitMode.Fit && record.BackgroundColor == "#E8DCC0",
                 "a picture path, fit mode and border colour round-trip exactly");
-            Check(loaded.TryGet(-1234, 120, out record) && record.FitMode == FitMode.Fill && record.BackgroundColor == "#000000",
-                "a record without a mode or border means Fill on black");
+            Check(loaded.TryGet(-1234, 120, out record) && record.FitMode == FitMode.Fill && record.BackgroundColor == "#000000" && record.TurnDegrees == 0,
+                "a record without a mode, border or rotation means upright Fill on black");
             Check(!loaded.TryGet(-1234, 121, out _), "a different painting under the same ID gets no picture");
             loaded.Remove(-1234);
-            Check(!loaded.TryGet(-1234, 120, out _) && loaded.Count == 1, "restoring the original art removes the record");
+            Check(!loaded.TryGet(-1234, 120, out _) && loaded.Count == 2, "restoring the original art removes the record");
             var future = new PictureStore();
             Check(future.Load("{\"Schema\":1,\"Pictures\":[{\"InstanceId\":5,\"PrefabIndex\":1,\"Path\":\"a.png\",\"Mode\":\"Tile\"}]}") &&
                 future.TryGet(5, 1, out record) && record.FitMode == FitMode.Fill, "an unknown fit mode shows as Fill");

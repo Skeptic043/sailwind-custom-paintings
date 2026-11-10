@@ -5,8 +5,8 @@ using UnityEngine.Rendering;
 namespace CustomPaintings
 {
     // Added to every native painting when it loads. Swaps the canvas material (slot 0) for a
-    // copy showing the chosen picture and puts the original material back on request. Fit mode
-    // colours the canvas and shows the picture on a thin quad just in front of it. The frame
+    // copy showing the chosen picture and puts the original material back on request. Fit mode and
+    // sideways pictures colour the canvas and show the picture on a thin quad just in front of it. The frame
     // material and the painting item itself are never changed.
     internal sealed class PaintingPicture : MonoBehaviour
     {
@@ -28,6 +28,7 @@ namespace CustomPaintings
         public string Path { get; private set; }
         public FitMode Mode { get; private set; } = FitMode.Fill;
         public string Background { get; private set; } = PictureRecord.DefaultBackground;
+        public int Rotation { get; private set; }
         public bool CanChoose => item != null && item.sold && saveable != null && saveable.instanceId != 0;
 
         // All 34 native paintings are plain ShipItems named "painting" with the canvas first.
@@ -49,22 +50,24 @@ namespace CustomPaintings
             if (reportedMeshes.Add(meshName))
                 Plugin.Log.LogInfo(knownCanvas
                     ? $"Frame {meshName}: canvas {canvas.Width:0.000} x {canvas.Height:0.000}, aspect {canvas.Aspect:0.000}."
-                    : $"Frame {meshName} is not a known painting frame. Its shape is estimated from its outline, and Fit shows as Fill.");
+                    : $"Frame {meshName} is not a known painting frame. Its shape is estimated from its outline, Fit shows as Fill and sideways pictures show upright.");
             if (saveable != null && saveable.instanceId != 0 &&
                 Plugin.Store.TryGet(saveable.instanceId, saveable.prefabIndex, out var record))
             {
                 Mode = record.FitMode;
                 Background = record.BackgroundColor;
+                Rotation = record.TurnDegrees;
                 Show(record.Path);
             }
         }
 
-        public void Choose(string path, FitMode mode, string background)
+        public void Choose(string path, FitMode mode, string background, int rotation)
         {
             if (!CanChoose) return;
             Mode = mode;
             Background = background;
-            Plugin.Store.Set(saveable.instanceId, saveable.prefabIndex, path, mode, background);
+            Rotation = PictureFit.Rotation(rotation);
+            Plugin.Store.Set(saveable.instanceId, saveable.prefabIndex, path, mode, background, Rotation);
             failureReported = false;
             // Choosing the same picture again retries a file that could not be loaded.
             if (path == Path && picture == null) Show(null, false);
@@ -73,10 +76,10 @@ namespace CustomPaintings
         }
 
         // Changes how the current picture sits in its frame.
-        public void SetFit(FitMode mode, string background)
+        public void SetFit(FitMode mode, string background, int rotation)
         {
             if (Path == null) return;
-            Choose(Path, mode, background);
+            Choose(Path, mode, background, rotation);
         }
 
         public void ChooseOriginal()
@@ -106,33 +109,37 @@ namespace CustomPaintings
         {
             if (canvasRenderer == null || picture == null) return;
             if (custom == null) custom = new Material(originals[0]) { name = originals[0].name + " (custom picture)" };
+            // An estimated canvas has no known depth for the quad, so it keeps to the canvas itself.
             var mode = Mode == FitMode.Fit && !knownCanvas ? FitMode.Fill : Mode;
-            bool fit = mode == FitMode.Fit;
+            int rotation = knownCanvas || Rotation == 180 ? Rotation : 0;
+            var place = PictureFit.Place(mode, rotation, pictureAspect, canvas.Width, canvas.Height);
             if (custom.HasProperty("_Color"))
             {
-                if (fit)
+                if (place.OnQuad)
                 {
                     PictureFit.ParseColor(Background, out float r, out float g, out float b);
                     custom.color = new Color(r, g, b, 1f);
                 }
                 else custom.color = originals[0].HasProperty("_Color") ? originals[0].color : Color.white;
             }
-            custom.mainTexture = fit ? Texture2D.whiteTexture : (Texture)picture;
-            PictureFit.Crop(mode, pictureAspect, canvas.Aspect, out float sx, out float sy, out float ox, out float oy);
-            custom.mainTextureScale = new Vector2(sx, sy);
-            custom.mainTextureOffset = new Vector2(ox, oy);
+            custom.mainTexture = place.OnQuad ? Texture2D.whiteTexture : (Texture)picture;
+            custom.mainTextureScale = place.OnQuad ? Vector2.one : new Vector2(place.ScaleX, place.ScaleY);
+            custom.mainTextureOffset = place.OnQuad ? Vector2.zero : new Vector2(place.OffsetX, place.OffsetY);
             var materials = (Material[])originals.Clone();
             materials[0] = custom;
             canvasRenderer.sharedMaterials = materials;
 
-            if (fit)
+            if (place.OnQuad)
             {
                 EnsureOverlay();
                 overlayMaterial.mainTexture = picture;
-                PictureFit.FitSize(pictureAspect, canvas.Aspect, out float wf, out float hf);
-                // A few millimetres in front of the canvas, toward the viewer on -Z.
+                overlayMaterial.mainTextureScale = new Vector2(place.ScaleX, place.ScaleY);
+                overlayMaterial.mainTextureOffset = new Vector2(place.OffsetX, place.OffsetY);
+                // A few millimetres in front of the canvas, toward the viewer on -Z. Seen from the
+                // front, a negative turn about Z is clockwise.
                 overlay.transform.localPosition = new Vector3(canvas.CenterX, canvas.CenterY, canvas.Z - 0.003f);
-                overlay.transform.localScale = new Vector3(canvas.Width * wf, canvas.Height * hf, 1f);
+                overlay.transform.localRotation = Quaternion.Euler(0f, 0f, -rotation);
+                overlay.transform.localScale = new Vector3(place.QuadWidth, place.QuadHeight, 1f);
                 overlay.enabled = true;
             }
             else if (overlay != null) overlay.enabled = false;
@@ -150,8 +157,6 @@ namespace CustomPaintings
             overlayMaterial = new Material(originals[0]) { name = originals[0].name + " (custom picture overlay)" };
             if (overlayMaterial.HasProperty("_Color"))
                 overlayMaterial.color = originals[0].HasProperty("_Color") ? originals[0].color : Color.white;
-            overlayMaterial.mainTextureScale = Vector2.one;
-            overlayMaterial.mainTextureOffset = Vector2.zero;
             overlay.sharedMaterial = overlayMaterial;
             // The native LOD group lists only the canvas renderer. Without this the picture would
             // stay visible after the painting is culled at a distance.

@@ -12,6 +12,9 @@ namespace CustomPaintings
     // panel, buttons and font and placed the way the pause menu is. It browses one folder at a
     // time (subfolders first), pages through 20 entries, searches the open folder and sets how
     // the picture sits in its frame. It is inactive, and costs nothing, while closed.
+    // The page finds the button under the cursor itself, from the screen position and the page's
+    // fixed place in front of the camera. The game's menu pointer raycasts physics colliders in
+    // FixedUpdate, which drifts off the buttons while the boat heels, so the page keeps it out.
     internal sealed class PicturePicker : MonoBehaviour
     {
         private const float MaxButtonText = .0125f;
@@ -23,6 +26,8 @@ namespace CustomPaintings
         // itself at about 90% of the view height.
         // Camera to page distance: the holder is 1.3 ahead and the page 2.4 further at half scale.
         private const float PageDistance = 1.3f + 2.4f * .5f;
+        // Buttons and thumbnails sit this far in front of the page plane, in page units.
+        private const float TargetDepth = .035f;
         private static readonly float[] RowY = { .86f, .24f, -.38f, -1.00f };
         private static readonly Color Ink = new Color(.06f, .035f, .02f, 1f);
         private static readonly Color MutedInk = new Color(.27f, .21f, .17f, 1f);
@@ -53,8 +58,10 @@ namespace CustomPaintings
         private readonly List<Material> ownedMaterials = new List<Material>();
         private readonly Dictionary<MenuButton, float> buttonWidths = new Dictionary<MenuButton, float>();
         private readonly Cell[] cells = new Cell[PerPage];
+        private readonly List<MenuButton> targets = new List<MenuButton>();
+        private MenuButton hovered;
         private TextMesh pathText, pageText, messageText, borderLabel;
-        private MenuButton backButton, searchButton, clearButton, previousButton, nextButton;
+        private MenuButton backButton, searchButton, clearButton, previousButton, nextButton, rotateButton;
         private MenuButton[] modeButtons;
         private MenuButton[] swatchButtons;
 
@@ -70,6 +77,7 @@ namespace CustomPaintings
         private int page;
         private FitMode mode;
         private string background;
+        private int rotation;
         private readonly List<string> wanted = new List<string>();
 
         internal static PicturePicker Instance { get; private set; }
@@ -88,7 +96,11 @@ namespace CustomPaintings
             target = painting;
             mode = painting.Mode;
             background = painting.Background;
+            rotation = painting.Rotation;
             var configured = PictureLibrary.ParseFolders(Plugin.PictureFolders);
+            // Screenshots are listed once the first one exists.
+            string screenshots = Plugin.ScreenshotFolder;
+            if (Directory.Exists(screenshots) && !configured.Exists(path => SamePath(path, screenshots))) configured.Add(screenshots);
             if (!SameFolders(configured, roots)) { roots = configured; rootIndex = -1; folder = null; page = 0; }
             // The last folder is reopened while it still exists inside its configured folder.
             if (rootIndex >= 0 && !Inside(folder, roots[rootIndex])) folder = roots[rootIndex];
@@ -128,6 +140,8 @@ namespace CustomPaintings
             enabled = false;
             target = null;
             searchFocused = false;
+            if (hovered != null) hovered.Hovered = false;
+            hovered = null;
             if (holder != null) holder.SetActive(false);
             PictureTextures.Instance?.ClearThumbnails();
             MouseLook.ToggleMouseLookAndCursor(true);
@@ -158,6 +172,50 @@ namespace CustomPaintings
             // Thumbnails arrive over several frames.
             foreach (var cell in cells)
                 if (cell.WaitingForThumbnail) ShowThumbnail(cell);
+            Point();
+        }
+
+        // Hover and click, as the native menu pointer does them, with its sounds.
+        private void Point()
+        {
+            var next = ButtonUnderPointer();
+            if (next != hovered)
+            {
+                if (hovered != null) hovered.Hovered = false;
+                hovered = next;
+                if (next != null)
+                {
+                    next.Hovered = true;
+                    var sounds = UISoundPlayer.instance;
+                    if (sounds != null) sounds.PlayUISound(UISounds.buttonHover, .6f, 1f);
+                }
+            }
+            if (next == null || !(Input.GetMouseButtonDown(0) || GameInput.GetKeyDown(InputName.PickUp))) return;
+            var clickSounds = UISoundPlayer.instance;
+            if (clickSounds != null) clickSounds.PlayUIClickSound();
+            next.OnActivate();
+        }
+
+        private MenuButton ButtonUnderPointer()
+        {
+            var view = uiCamera != null ? uiCamera : Camera.main;
+            if (view == null) return null;
+            Vector3 screen = Input.mousePosition;
+            // A controller moves the native on-screen pointer instead of the mouse.
+            var mouse = MouseButtonPointer.instance;
+            if (mouse != null && mouse.controllerPointer != null && mouse.controllerPointer.gameObject.activeInHierarchy)
+                screen = view.WorldToScreenPoint(mouse.controllerPointer.position);
+            var ray = view.ScreenPointToRay(screen);
+            Vector3 near = root.InverseTransformPoint(ray.origin), far = root.InverseTransformPoint(ray.origin + ray.direction);
+            if (far.z - near.z <= 1e-5f) return null;
+            Vector2 point = Vector3.LerpUnclamped(near, far, (TargetDepth - near.z) / (far.z - near.z));
+            // Later targets are drawn over earlier ones.
+            for (int i = targets.Count - 1; i >= 0; i--)
+            {
+                var target = targets[i];
+                if (!target.unclickable && target.gameObject.activeInHierarchy && target.Area().Contains(point)) return target;
+            }
+            return null;
         }
 
         private void ReadSearchInput()
@@ -267,7 +325,7 @@ namespace CustomPaintings
             if (target == null || !cell.HasEntry) return;
             searchFocused = false;
             if (cell.Entry.IsFolder) { Enter(cell.Entry); return; }
-            target.Choose(cell.Entry.Path, mode, background);
+            target.Choose(cell.Entry.Path, mode, background, rotation);
             Close();
         }
 
@@ -275,14 +333,22 @@ namespace CustomPaintings
         private void SetMode(FitMode next)
         {
             mode = next;
-            target.SetFit(mode, background);
+            target.SetFit(mode, background, rotation);
             Refresh();
         }
 
         private void SetBackground(string color)
         {
             background = color;
-            target.SetFit(mode, background);
+            target.SetFit(mode, background, rotation);
+            Refresh();
+        }
+
+        // Cycles 0, 90, 180 and 270 degrees clockwise.
+        private void Rotate()
+        {
+            rotation = PictureFit.Rotation(rotation + 90);
+            target.SetFit(mode, background, rotation);
             Refresh();
         }
 
@@ -344,6 +410,7 @@ namespace CustomPaintings
 
             for (int i = 0; i < modeButtons.Length; i++)
                 SetText(modeButtons[i], ((FitMode)i).ToString(), (FitMode)i == mode ? MarkInk : Ink);
+            SetText(rotateButton, "Rotation: " + rotation, Ink);
             bool fit = mode == FitMode.Fit;
             borderLabel.text = fit ? "Border" : "";
             for (int i = 0; i < swatchButtons.Length; i++)
@@ -458,6 +525,14 @@ namespace CustomPaintings
             sheet.transform.localScale = new Vector3(panel.localScale.x,
                 PaperWidth / Mathf.Max(.01f, size.y), PaperHeight / Mathf.Max(.01f, size.z));
 
+            // The game's pointer still raycasts while the menu is open. This stops it at the page, so
+            // nothing behind the page reacts. It finds no button here.
+            var blocker = new GameObject("pointer blocker");
+            blocker.layer = root.gameObject.layer;
+            blocker.transform.SetParent(root, false);
+            blocker.transform.localPosition = new Vector3(0f, 0f, .06f);
+            blocker.AddComponent<BoxCollider>().size = new Vector3(PaperWidth, PaperHeight, .02f);
+
             Label("Choose a Picture", 0f, 1.60f, .017f, Ink);
             pathText = Label("", 0f, 1.43f, .0095f, Ink);
             backButton = Button("Back", -2.25f, 1.27f, .50f, .17f, Back);
@@ -498,6 +573,8 @@ namespace CustomPaintings
                 material.color = new Color(r, g, b, 1f);
                 swatchButtons[i].Clicked = () => SetBackground(color);
             }
+
+            rotateButton = Button("Rotation: 0", 2.18f, -1.48f, .70f, .15f, Rotate);
 
             Button("Original Art", -2.15f, -1.72f, .78f, .17f, () => { target.ChooseOriginal(); Close(); });
             previousButton = Button("<", -.60f, -1.72f, .27f, .17f, () => ChangePage(-1));
@@ -544,7 +621,10 @@ namespace CustomPaintings
             surface.localScale = new Vector3(width / Mathf.Max(.01f, meshSize.x), height / Mathf.Max(.01f, meshSize.y), surface.localScale.z);
             var texts = visual.GetComponentsInChildren<TextMesh>(true);
             for (int i = 1; i < texts.Length; i++) texts[i].gameObject.SetActive(false);
+            foreach (var collider in visual.GetComponentsInChildren<Collider>(true)) collider.enabled = false;
             var button = surface.gameObject.AddComponent<MenuButton>();
+            button.Area = () => new Rect(x - width / 2f, y - height / 2f, width, height);
+            targets.Add(button);
             button.Clicked = () =>
             {
                 // Clicking anything else ends typing in the search field.
@@ -575,9 +655,13 @@ namespace CustomPaintings
             material.mainTextureOffset = Vector2.zero;
             ownedMaterials.Add(material);
             renderer.sharedMaterial = material;
-            var collider = go.AddComponent<BoxCollider>();
-            collider.size = new Vector3(1f, 1f, .02f);
-            return go.AddComponent<MenuButton>();
+            var button = go.AddComponent<MenuButton>();
+            var area = go.transform;
+            // Thumbnails and swatches change size, so the area follows the quad's scale.
+            button.Area = () => new Rect(area.localPosition.x - area.localScale.x / 2f,
+                area.localPosition.y - area.localScale.y / 2f, area.localScale.x, area.localScale.y);
+            targets.Add(button);
+            return button;
         }
 
         private static TextMesh ButtonText(MenuButton button) =>

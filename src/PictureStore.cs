@@ -16,11 +16,14 @@ namespace CustomPaintings
         // Omitted when default, so plain Fill choices on black stay short in the save.
         [DataMember(EmitDefaultValue = false)] public string Mode;
         [DataMember(EmitDefaultValue = false)] public string Background;
+        // Clockwise degrees. Older versions ignore it and show the picture upright.
+        [DataMember(EmitDefaultValue = false)] public int Rotation;
 
         // An unknown mode, for example from a newer version, falls back to Fill.
         public FitMode FitMode => Mode != null && Enum.IsDefined(typeof(FitMode), Mode)
             ? (FitMode)Enum.Parse(typeof(FitMode), Mode) : FitMode.Fill;
         public string BackgroundColor => Background ?? DefaultBackground;
+        public int TurnDegrees => PictureFit.Rotation(Rotation);
         public const string DefaultBackground = "#000000";
     }
 
@@ -105,7 +108,7 @@ namespace CustomPaintings
 
         // Choosing a picture is the player's decision to replace unreadable saved data, which
         // otherwise would silently keep every new choice out of the save.
-        public void Set(int instanceId, int prefabIndex, string path, FitMode mode, string background)
+        public void Set(int instanceId, int prefabIndex, string path, FitMode mode, string background, int rotation = 0)
         {
             Writable = true;
             records[instanceId] = new PictureRecord
@@ -113,6 +116,7 @@ namespace CustomPaintings
                 InstanceId = instanceId, PrefabIndex = prefabIndex, Path = path,
                 Mode = mode == FitMode.Fill ? null : mode.ToString(),
                 Background = background == null || background == PictureRecord.DefaultBackground ? null : background,
+                Rotation = PictureFit.Rotation(rotation),
             };
         }
 

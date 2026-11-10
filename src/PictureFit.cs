@@ -19,6 +19,17 @@ namespace CustomPaintings
         public float Aspect => Width / Height;
     }
 
+    // Where a picture goes and which part of it shows. On the canvas, the canvas material samples
+    // the picture directly. On the quad, a quad just in front of the canvas shows it, turned by the
+    // painting's rotation, and the canvas shows the border colour.
+    internal struct Placement
+    {
+        public bool OnQuad;
+        // The quad's size before it is turned, in mesh units.
+        public float QuadWidth, QuadHeight;
+        public float ScaleX, ScaleY, OffsetX, OffsetY;
+    }
+
     // Size, crop and placement arithmetic, kept free of Unity types so the logic tests can run it.
     internal static class PictureFit
     {
@@ -84,6 +95,42 @@ namespace CustomPaintings
             if (pictureAspect <= 0f || canvasAspect <= 0f) return;
             if (pictureAspect > canvasAspect) heightFraction = canvasAspect / pictureAspect;
             else widthFraction = pictureAspect / canvasAspect;
+        }
+
+        // Clockwise quarter turns: 0, 90, 180 or 270. Anything else, for example from an edited
+        // save, snaps to the nearest quarter turn.
+        public static int Rotation(int degrees)
+        {
+            int quarters = (int)Math.Round(degrees / 90.0) % 4;
+            return (quarters + 4) % 4 * 90;
+        }
+
+        // Upright and upside-down pictures in Fill or Stretch stay on the canvas material, where an
+        // upside-down picture is its texture range reversed. Fit and sideways pictures need the quad.
+        // A sideways picture is laid out in its own upright frame, where the canvas sides are swapped.
+        public static Placement Place(FitMode mode, int rotation, float pictureAspect, float canvasWidth, float canvasHeight)
+        {
+            bool sideways = rotation == 90 || rotation == 270;
+            var place = new Placement { OnQuad = mode == FitMode.Fit || sideways };
+            float width = sideways ? canvasHeight : canvasWidth, height = sideways ? canvasWidth : canvasHeight;
+            float aspect = height > 0f ? width / height : 0f;
+            Crop(mode, pictureAspect, aspect, out place.ScaleX, out place.ScaleY, out place.OffsetX, out place.OffsetY);
+            if (mode == FitMode.Fit)
+            {
+                FitSize(pictureAspect, aspect, out float widthFraction, out float heightFraction);
+                width *= widthFraction;
+                height *= heightFraction;
+            }
+            place.QuadWidth = width;
+            place.QuadHeight = height;
+            if (rotation == 180 && !place.OnQuad)
+            {
+                place.OffsetX += place.ScaleX;
+                place.OffsetY += place.ScaleY;
+                place.ScaleX = -place.ScaleX;
+                place.ScaleY = -place.ScaleY;
+            }
+            return place;
         }
 
         // "#RRGGBB" to 0-1 channels. Anything unreadable is black.

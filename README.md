@@ -30,6 +30,9 @@ Settings can be found in `BepInEx/config/com.skeptic043.sailwind.custompaintings
 | `Picture folders` | Blank | Folders to choose pictures from, separated by `\|`, for example `D:\Pictures \| E:\Ship Art`. |
 | `Maximum size` | `1024` | Pictures larger than this size are shrunk to match. `1024`, `2048` or `4096`. |
 | `Compress pictures` | `true` | Store pictures compressed in video memory, using about a sixth of the memory with a slight loss of quality. |
+| `Screenshot key` | `F2` | The key that saves a screenshot. |
+| `Screenshot folder` | Blank | Where screenshots are saved. Blank uses `BepInEx/Custom Paintings Screenshots`. |
+| `Screenshot notification` | `true` | Shows a "Screenshot taken" notification after each screenshot. |
 
 ## Compatibility
 
